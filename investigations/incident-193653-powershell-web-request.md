@@ -1,313 +1,401 @@
-# Brute Force Login Detection
+# Incident #193653 - PowerShell Invoke-WebRequest Investigation
 
-**Rule Type:** Scheduled Analytics Rule  
-**MITRE ATT&CK:** T1110 - Brute Force (Credential Access)  
-**Severity:** MEDIUM  
-**Data Source:** Windows Security Events (Event ID 4625)  
-**Platform:** Azure Sentinel (KQL) | Splunk (SPL) | Securonix
-
----
-
-## 📋 Rule Overview
-
-**Purpose:**  
-Detect potential brute force attacks by identifying excessive failed login attempts from a single account within a short time window.
-
-**Business Impact:**  
-- Credential compromise prevention
-- Account lockout reduction
-- Insider threat detection
-- Compliance (PCI DSS 8.2.5, NIST AC-7)
-
-**Detection Logic:**  
-Time-based aggregation of failed login events (Event ID 4625) to identify accounts with 5+ failures in 5 minutes.
+**Incident ID:** 193653  
+**Severity:** HIGH  
+**MITRE ATT&CK:** T1059.001 (PowerShell Execution)  
+**Detection Date:** October 12, 2025  
+**Investigation Date:** October 12, 2025, 8:00 PM - 10:00 PM EST  
+**Investigator:** Muhammad Talha Tabish  
+**Status:** CLOSED - Training Exercise
 
 ---
 
-## 🔍 Azure Sentinel (KQL Query)
+## Executive Summary
 
-### Production Rule
+Azure Sentinel detected HIGH severity PowerShell web request activity on October 12, 2025. The alert triggered on Event ID 4688 (process creation) indicating PowerShell executing Invoke-WebRequest commands to an external URL. Initial triage suggested potential malware download or command-and-control (C2) communication.
 
-```kql
-// Brute Force Login Detection - Failed Authentication Attempts
+**Investigation Outcome:** Through systematic forensic analysis using the PICERL framework, this incident was confirmed as a **training exercise** within the LAW-Cyber-Range environment. Five independent indicators validated this assessment, including EICAR test file signatures, test username patterns, and cyber range context.
+
+**Key Finding:** Command-line logging (Event ID 4688 with ProcessCommandLine field) was critical to root cause analysis. Without this audit policy, the investigation would have required significantly more time and resources.
+
+---
+
+## Alert Details
+
+**Azure Sentinel Alert Information:**
+- **Alert Name:** PowerShell Invoke-WebRequest Detected
+- **Alert ID:** 193653
+- **Severity:** HIGH
+- **Detection Rule:** PowerShell Web Request Activity
+- **Triggered:** October 12, 2025, 8:15 PM EST
+- **Environment:** LAW-Cyber-Range (Azure Sentinel Workspace)
+
+**Initial Indicators:**
+- PowerShell process (powershell.exe) execution detected
+- Invoke-WebRequest command with external URL
+- Execution duration: 5-minute burst (anomalous pattern)
+- User account: user123 (non-administrative)
+- Source computer: DESKTOP-TEST-01
+
+---
+
+## Investigation Methodology - PICERL Framework
+
+### P - PREPARE (8:00 PM - 8:10 PM)
+
+**Gathered Required Context:**
+- Alert severity and description
+- Detection rule logic and threshold
+- Expected baseline behavior
+- Recent security advisories
+
+**Tools Prepared:**
+- Azure Sentinel Log Analytics workspace
+- KQL query templates for investigation
+- MITRE ATT&CK framework reference
+- Incident response playbook
+
+**Initial Assessment:**
+- **Risk Level:** Potentially HIGH if malware download or C2
+- **Urgency:** Immediate investigation required
+- **Scope:** Single user, single endpoint initially
+
+---
+
+### I - IDENTIFY (8:10 PM - 8:30 PM)
+
+**Event ID 4688 Analysis:**
+
+Queried Log Analytics for process creation events:
+
+```
 SecurityEvent
-| where EventID == 4625  // Failed logon event
-| where AccountType == "User"  // Exclude computer accounts
-| where Account !endswith "$"  // Additional machine account filter
-| summarize FailedAttempts = count(), 
-            DistinctComputers = dcount(Computer),
-            FirstAttempt = min(TimeGenerated),
-            LastAttempt = max(TimeGenerated)
-    by bin(TimeGenerated, 5m), Account, IpAddress
-| where FailedAttempts >= 5  // Threshold: 5 failures
-| project 
-    TimeGenerated,
-    Account,
-    IpAddress,
-    FailedAttempts,
-    DistinctComputers,
-    FirstAttempt,
-    LastAttempt,
-    Duration = LastAttempt - FirstAttempt
-| order by FailedAttempts desc
+| where EventID == 4688
+| where Process has "powershell.exe"
+| where TimeGenerated between (datetime(2025-10-12 20:10:00) .. datetime(2025-10-12 20:20:00))
+| where Account == "user123"
+| project TimeGenerated, Account, Computer, ProcessCommandLine
 ```
 
-### Query Explanation
+**Key Findings from Command-Line Analysis:**
 
-**Line-by-Line Breakdown:**
-
-1. **`SecurityEvent`** - Query Windows Security Event logs
-2. **`where EventID == 4625`** - Filter for failed logon attempts
-3. **`where AccountType == "User"`** - Exclude computer accounts (reduces noise by ~40%)
-4. **`where Account !endswith "$"`** - Secondary machine account filter
-5. **`summarize ... by bin(TimeGenerated, 5m)`** - Aggregate events in 5-minute windows
-   - `FailedAttempts = count()` - Total failures in window
-   - `DistinctComputers = dcount(Computer)` - Number of unique targets
-   - `FirstAttempt / LastAttempt` - Attack duration calculation
-6. **`where FailedAttempts >= 5`** - Apply threshold (configurable)
-7. **`project`** - Select output fields for investigation
-8. **`order by FailedAttempts desc`** - Prioritize highest severity
-
----
-
-## 🎯 Threshold Tuning - "Goldilocks Zone"
-
-### Why 5 Failures in 5 Minutes?
-
-**Too Low (3 failures):**
-- ❌ High false positive rate
-- ❌ Legitimate user typos trigger alerts
-- ❌ SOC analyst burnout from alert fatigue
-
-**Too High (10+ failures):**
-- ❌ Attack already succeeded before detection
-- ❌ Attacker used slow-and-low technique
-- ❌ Missed opportunity for containment
-
-**Just Right (5 failures in 5 minutes):**
-- ✅ Balances detection speed vs false positives
-- ✅ Catches automated brute force tools
-- ✅ Allows 2-3 legitimate mistakes before alerting
-- ✅ 5-minute window detects sustained attacks
-
-### Baseline Awareness
-
-Before implementing, establish baseline:
-- Average failed login rate per user
-- Service account patterns
-- Help desk password reset windows
-- VPN authentication retry behavior
-
-**Example Baseline Data:**
-- Normal users: 0-2 failures/day
-- Service accounts: 0 failures (automated)
-- Help desk: 3-5 failures during reset windows
-- VPN users: 1-3 failures during morning rush
-
----
-
-## 🔄 Splunk Translation (SPL)
-
-### Splunk Correlation Search
-
-```spl
-index=windows EventCode=4625 Account_Type="User"
-| eval Account=mvindex(split(Account_Name,"\\"),1)
-| search NOT Account="*$"
-| bucket _time span=5m
-| stats count as FailedAttempts, 
-        dc(ComputerName) as DistinctComputers,
-        min(_time) as FirstAttempt,
-        max(_time) as LastAttempt
-    by _time, Account, Source_Network_Address
-| where FailedAttempts >= 5
-| eval Duration=LastAttempt-FirstAttempt
-| eval FirstAttempt=strftime(FirstAttempt,"%Y-%m-%d %H:%M:%S")
-| eval LastAttempt=strftime(LastAttempt,"%Y-%m-%d %H:%M:%S")
-| table _time, Account, Source_Network_Address, FailedAttempts, DistinctComputers, FirstAttempt, LastAttempt, Duration
-| sort -FailedAttempts
+**Command Executed:**
+```
+powershell.exe -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'http://testdomain.com/eicar.txt' -OutFile 'C:\temp\test.txt'"
 ```
 
-### Key Differences (KQL vs SPL)
+**Red Flags Identified:**
+1. `-ExecutionPolicy Bypass` - Attempting to bypass script execution policy
+2. `Invoke-WebRequest` - Downloading file from external URL
+3. External domain: testdomain.com (unknown origin)
+4. Output file: C:\temp\test.txt (local disk write)
 
-| Feature | Azure Sentinel (KQL) | Splunk (SPL) |
-|---------|---------------------|--------------|
-| **Time bucketing** | `bin(TimeGenerated, 5m)` | `bucket _time span=5m` |
-| **Aggregation** | `summarize` | `stats` |
-| **Distinct count** | `dcount()` | `dc()` |
-| **Field filtering** | `where` | `where` or `search` |
-| **Output** | `project` | `table` |
-| **Sorting** | `order by` | `sort` |
-
----
-
-## 🧪 Testing & Validation
-
-### Test Scenario 1: Legitimate User Lockout
-**Scenario:** User forgets password after vacation, tries 3 times, calls help desk  
-**Expected Result:** No alert (below threshold)  
-**Actual Result:** ✅ No alert generated
-
-### Test Scenario 2: Brute Force Tool (Hydra)
-**Scenario:** Attacker runs Hydra with 100 password attempts in 2 minutes  
-**Expected Result:** Alert triggered within 5 minutes  
-**Actual Result:** ✅ Alert generated at 7 failures (42 seconds into attack)
-
-### Test Scenario 3: Slow Brute Force
-**Scenario:** Attacker uses 1 attempt every 2 minutes (password spray)  
-**Expected Result:** No alert from this rule (use different detection)  
-**Actual Result:** ✅ No alert (requires password spray detection rule)
+**CRITICAL CLARIFICATION - ExecutionPolicy Bypass:**
+- Does NOT bypass antivirus or EDR detection
+- Only disables PowerShell script signing policy
+- Windows Defender still scans downloaded files
+- This is commonly misunderstood even by security professionals
 
 ---
 
-## 🚨 False Positive Reduction
+**Timeline Reconstruction:**
 
-### Common False Positives
+| Time (EST) | Event | Details |
+|------------|-------|---------|
+| 20:10:15 | PowerShell process start | User123 launched powershell.exe |
+| 20:10:18 | Invoke-WebRequest execution | Download initiated to testdomain.com |
+| 20:10:22 | File write | test.txt saved to C:\temp\ |
+| 20:10:25 | Process termination | PowerShell.exe closed |
+| 20:15:30 | Alert triggered | Azure Sentinel HIGH severity alert |
 
-**1. Service Accounts with Expired Passwords**
-- **Symptom:** Automated processes retrying failed auth
-- **Solution:** Whitelist known service accounts OR monitor separately
-- **KQL Filter:** `| where Account !in ("svc-backup", "svc-monitoring")`
+**Duration Analysis:**
+- Total execution: 10 seconds (20:10:15 → 20:10:25)
+- 5-minute window in alert (likely aggregation window)
+- Single execution, not sustained activity
 
-**2. VPN Users During Network Issues**
-- **Symptom:** Legitimate users retrying during outage
-- **Solution:** Correlate with network monitoring alerts
-- **KQL Enhancement:** Check for simultaneous failures across multiple accounts
+---
 
-**3. Help Desk Password Reset Windows**
-- **Symptom:** Users testing new password multiple times
-- **Solution:** Suppress alerts for 15 minutes post-password change
-- **KQL Enhancement:** Join with Event 4724 (password reset events)
+**Lateral Movement Check:**
 
-### Enhanced Detection with Context
+Queried for subsequent network logons (Event ID 4624, Logon Type 3):
 
-```kql
-// Version 2: Context-Aware Brute Force Detection
-let PasswordResets = SecurityEvent
-    | where EventID == 4724  // Password reset
-    | project ResetTime=TimeGenerated, ResetAccount=TargetAccount;
+```
 SecurityEvent
-| where EventID == 4625
-| where AccountType == "User"
-| where Account !endswith "$"
-| join kind=leftanti (PasswordResets) on $left.Account == $right.ResetAccount, 
-    $left.TimeGenerated >= $right.ResetTime and $left.TimeGenerated <= $right.ResetTime + 15m
-| summarize FailedAttempts = count() by bin(TimeGenerated, 5m), Account, IpAddress
-| where FailedAttempts >= 5
+| where EventID == 4624
+| where LogonType == 3
+| where Account == "user123"
+| where TimeGenerated > datetime(2025-10-12 20:10:00)
+| project TimeGenerated, Computer, IpAddress
 ```
 
-**Enhancement:** Excludes failures within 15 minutes of password reset
+**Result:** No lateral movement detected. User123 did not authenticate to other systems.
 
 ---
 
-## 📊 Investigation Workflow
+**Persistence Mechanism Check:**
 
-### When Alert Fires - PICERL Framework
+Searched for account creation or privilege escalation:
 
-**PREPARE:**
-- Gather alert details: Account, IP, failure count, timeframe
-- Check if account is privileged (Domain Admin, local admin)
+```
+SecurityEvent
+| where EventID in (4720, 4728, 4732)  // Account created, user added to group
+| where TimeGenerated > datetime(2025-10-12 20:10:00)
+| where SubjectAccount == "user123" or TargetAccount == "user123"
+```
 
-**IDENTIFY:**
-- Review Event 4625 details: Failure reason (bad password vs account locked)
-- Check source IP geolocation: Internal vs external
-- Review recent successful logins (Event 4624) from same account
-
-**CONTAIN:**
-- If external IP + high-value account: Reset password immediately
-- If confirmed attack: Block source IP at firewall
-- If account locked: Contact user before unlocking
-
-**ERADICATE:**
-- Verify no unauthorized access occurred (check Event 4624 success logs)
-- Review account activity logs for lateral movement
-- Scan endpoint for malware if compromise suspected
-
-**RECOVER:**
-- Unlock account if legitimate user
-- Update password if compromised
-- Re-enable account access
-
-**LESSONS LEARNED:**
-- Document attack pattern
-- Update detection thresholds if needed
-- Train users on secure password practices
+**Result:** No persistence mechanisms created. No new accounts, no privilege escalation.
 
 ---
 
-## 🎓 Interview Talking Points
+### C - CONTAIN (8:30 PM - 8:40 PM)
 
-### Question: "How would you tune this detection rule?"
+**Initial Containment Assessment:**
+
+**Evidence Suggesting Training Exercise (Not Real Attack):**
+1. **EICAR Test File:** URL contains "eicar.txt" - industry-standard antivirus test file
+2. **Test Username:** "user123" follows training naming convention
+3. **Test Computer:** "DESKTOP-TEST-01" indicates test environment
+4. **Cyber Range Context:** LAW-Cyber-Range workspace used for training
+5. **File Location:** C:\temp\ (typical training sandbox location)
+
+**EICAR Test File Background:**
+- European Institute for Computer Antivirus Research standard
+- Harmless text file that antivirus treats as malware
+- Used globally for testing AV detection without real malware
+- Content: Plain text ASCII string, not executable code
+
+**Decision:** Based on 5 independent indicators, this is a training exercise. **No containment actions required.**
+
+**Hypothetical Production Response (if this were real):**
+- Isolate endpoint from network immediately
+- Disable user account user123
+- Block testdomain.com at firewall/proxy
+- Initiate malware scan on DESKTOP-TEST-01
+- Alert SOC team for coordinated response
+
+---
+
+### E - ERADICATE (8:40 PM - 8:50 PM)
+
+**Training Exercise Context:**
+No eradication required as this is not a real threat.
+
+**Hypothetical Production Eradication (if real attack):**
+1. **Remove malware:** Delete C:\temp\test.txt and scan for additional artifacts
+2. **Remove persistence:** Check scheduled tasks, registry run keys, startup folders
+3. **Credential reset:** Force password change for user123
+4. **System rebuild:** If heavily compromised, reimage endpoint
+5. **Network cleanup:** Remove any C2 beacons or backdoors
+
+---
+
+### R - RECOVER (8:50 PM - 9:00 PM)
+
+**Training Exercise:**
+No recovery actions needed. System remains operational for continued training.
+
+**Hypothetical Production Recovery:**
+1. **Restore from backup:** If data was encrypted/deleted
+2. **Re-enable user account:** After password reset and security training
+3. **Network reconnection:** After confirming system is clean
+4. **Monitor for reinfection:** 72-hour enhanced monitoring period
+
+---
+
+### L - LESSONS LEARNED (9:00 PM - 10:00 PM)
+
+**What Worked Well:**
+
+1. **Command-Line Logging Was Critical**
+   - Event ID 4688 with ProcessCommandLine enabled full investigation
+   - Without this, we'd only see "powershell.exe" without context
+   - **Recommendation:** Ensure all production systems have command-line audit policy enabled
+
+2. **PICERL Framework Provided Structure**
+   - Systematic approach prevented rushing to conclusions
+   - Ensured comprehensive evidence collection
+   - Documented decision-making process for audit trail
+
+3. **Detection Rule Triggered Appropriately**
+   - PowerShell web requests are legitimate concern
+   - Alert fired within 5 minutes (good MTTD - Mean Time to Detect)
+
+**What Could Be Improved:**
+
+1. **False Positive Rate**
+   - Training environments should be whitelisted to reduce alert noise
+   - **Recommendation:** Add "LAW-Cyber-Range" workspace exclusion to production rules
+
+2. **EICAR File Download Flagging**
+   - Legitimate security testing triggers HIGH severity alerts
+   - **Recommendation:** Create separate detection rule for EICAR downloads with INFORMATIONAL severity
+
+3. **Context Enrichment**
+   - Alert didn't include "cyber range" context automatically
+   - **Recommendation:** Tag training/test systems in asset inventory for automatic enrichment
+
+**Production Playbook Development:**
+
+Based on this investigation, created response playbook for real PowerShell malware incidents:
+
+**Tier 1 Analyst Actions (0-15 minutes):**
+- Review Event ID 4688 for full command line
+- Check if EICAR test file (training) or real malware
+- Verify user account legitimacy (AD lookup)
+- Check endpoint location (physical/virtual, prod/test)
+
+**Tier 2 Analyst Actions (15-45 minutes):**
+- Full timeline reconstruction (5 minutes before/after)
+- Lateral movement analysis (Event 4624 queries)
+- Persistence check (scheduled tasks, registry, accounts)
+- Malware sample collection (if safe)
+
+**Tier 3 / Incident Commander Actions (45+ minutes):**
+- Containment decision (isolate or monitor)
+- Stakeholder notification (management, legal, CISO)
+- Coordinate with endpoint security team
+- Determine root cause (phishing, exploit, insider)
+
+---
+
+## Technical Evidence
+
+**Event ID 4688 - Process Creation:**
+
+**Raw Log Sample:**
+```
+TimeGenerated: 2025-10-12 20:10:15
+EventID: 4688
+Computer: DESKTOP-TEST-01
+Account: LAW-CYBER-RANGE\user123
+Process: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+ProcessCommandLine: powershell.exe -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'http://testdomain.com/eicar.txt' -OutFile 'C:\temp\test.txt'"
+ParentProcessName: C:\Windows\explorer.exe
+NewProcessId: 0x1a4c
+TokenElevationType: %%1936 (Default - not elevated)
+```
+
+**Key Fields for Investigation:**
+- **ProcessCommandLine:** Full command with arguments (CRITICAL field)
+- **ParentProcessName:** Explorer.exe = user-initiated, not automated script
+- **TokenElevationType:** Not elevated = no admin privileges used
+- **Computer:** DESKTOP-TEST-01 = test environment indicator
+
+---
+
+## Where to Find Critical Information in Azure Sentinel
+
+**For Future Investigations:**
+
+**1. ProcessCommandLine Field:**
+- Location: Log Analytics → SecurityEvent table → ProcessCommandLine column
+- Enable: Group Policy → Computer Config → Policies → Admin Templates → System → Audit Process Creation → Include command line in process creation events = ENABLED
+
+**2. Incident Duration:**
+- Incident Panel → "Time Generated" (start time)
+- Compare first event vs last event timestamps
+- Use KQL: `| summarize min(TimeGenerated), max(TimeGenerated)`
+
+**3. MITRE ATT&CK Mapping:**
+- Incident Panel → "Tactics and techniques" section
+- Shows T1059.001 (PowerShell) classification
+- Links to MITRE ATT&CK framework documentation
+
+**4. Related Events:**
+- Incident Panel → "Related events" or "Investigate" button
+- Opens Log Analytics with filtered query
+- Shows all events in same timeframe for same entity
+
+**5. Alert Rule Logic:**
+- Analytics → Active rules → Search for "PowerShell"
+- View KQL query used for detection
+- Review threshold and frequency settings
+
+---
+
+## MITRE ATT&CK Mapping
+
+**Primary Technique:**
+- **T1059.001** - Command and Scripting Interpreter: PowerShell
+- **Tactic:** Execution
+- **Description:** Adversaries abuse PowerShell for executing malicious commands
+- **Detection:** Monitor Event ID 4688 with command-line logging enabled
+
+**Related Techniques (Not Observed in This Incident):**
+- T1105 - Ingress Tool Transfer (file download, but EICAR test file)
+- T1027 - Obfuscated Files or Information (ExecutionPolicy bypass attempt)
+- T1071 - Application Layer Protocol (HTTP used for download)
+
+---
+
+## Interview Talking Points
+
+**Question: "Walk me through how you investigated this PowerShell alert"**
 
 **Answer Framework:**
-1. **Baseline first:** Analyze 30 days of Event 4625 logs to understand normal failure rates
-2. **Consider context:** Time of day (morning login rush), day of week (Monday = more failures)
-3. **Account type:** Separate thresholds for privileged accounts (lower) vs standard users (higher)
-4. **Attack type:** This rule catches automated brute force, not password spray (different pattern)
-5. **Feedback loop:** Monitor alert-to-incident conversion rate, adjust threshold quarterly
+"I received a HIGH severity alert for PowerShell Invoke-WebRequest activity. I used the PICERL framework for systematic investigation.
 
-### Question: "How does this translate to Splunk/Securonix?"
+First, I queried Event ID 4688 in Log Analytics to get the full command line. This showed me the exact PowerShell command - it was downloading from testdomain.com with ExecutionPolicy Bypass.
+
+I clarified that ExecutionPolicy Bypass does NOT bypass antivirus - common misconception. It only disables PowerShell script signing checks.
+
+Then I checked for lateral movement using Event 4624 network logons - nothing found. Checked for persistence with Event 4720 and 4728 - no new accounts or privilege escalation.
+
+The key evidence that made me confident this was a training exercise: EICAR test file in the URL, username 'user123', computer name 'DESKTOP-TEST-01', and the LAW-Cyber-Range environment context. All five indicators aligned.
+
+In production, I would have contained immediately - isolated the endpoint, disabled the account, blocked the domain. But with training confirmed, I documented it as a lessons-learned exercise and recommended whitelisting cyber range environments to reduce false positives."
+
+---
+
+**Question: "How would you handle this in Splunk or Securonix?"**
 
 **Answer Framework:**
-- **Core logic is identical:** Count failures in time window, apply threshold
-- **Field names differ:** 
-  - Sentinel: `Account`, `Computer`, `TimeGenerated`
-  - Splunk: `Account_Name`, `ComputerName`, `_time`
-  - Securonix: `accountname`, `hostname`, `eventtime`
-- **Query syntax differs:** KQL uses `summarize`, SPL uses `stats`, Securonix uses threat models
-- **But investigation process is the same:** PICERL framework applies regardless of platform
+"The core investigation process is platform-agnostic. I'd use the same PICERL methodology.
 
-### Question: "What's a limitation of this detection?"
+In Sentinel, I used KQL to query SecurityEvent table for Event 4688. In Splunk, I'd use SPL to query the Windows Event logs with EventCode=4688. In Securonix, I'd query their normalized process creation logs using their correlation search language.
 
-**Honest Answer:**
-- **Doesn't catch password spray attacks:** Attacker tries 1 password across 100 accounts (different pattern)
-- **Doesn't detect credential stuffing:** Attacker uses valid credentials from data breach
-- **Time-based only:** Doesn't consider geolocation or user behavior anomalies (UEBA needed)
-- **Requires Event 4625 logging:** If audit policy disabled, rule is blind
+The field names differ - Sentinel calls it ProcessCommandLine, Securonix might call it CommandLine or ProcessArgs - but the logic is the same: filter for powershell.exe + web download commands + external URLs.
+
+The detection rule would use Securonix's threat model with similar correlation logic. Same investigation queries, same timeline reconstruction, same lateral movement checks - just different query syntax."
 
 ---
 
-## 📈 Metrics & Effectiveness
+## Supporting Evidence
 
-**Production Metrics (30-day sample):**
-- **Total Alerts Generated:** 47
-- **True Positives:** 12 (26% precision)
-- **False Positives:** 35 (service accounts, help desk activity)
-- **Mean Time to Detect (MTTD):** 4.2 minutes
-- **Mean Time to Respond (MTTR):** 18 minutes
+**Evidence Collected:**
+- ✅ Event ID 4688 logs from Log Analytics (PowerShell process creation)
+- ✅ Alert details from Azure Sentinel incident panel
+- ✅ Screenshots of investigation process
+- ✅ Timeline reconstruction
+- ✅ Lateral movement query results (negative findings)
+- ✅ Persistence check query results (negative findings)
 
-**Tuning Impact:**
-- Added service account whitelist → False positives reduced 40%
-- Increased threshold 4→5 failures → False positives reduced 25%
-- Added password reset suppression → False positives reduced 15%
-- **Current precision:** 61% (industry standard: 50-70%)
-
----
-
-## 🔗 Related Detection Rules
-
-**Complementary Rules:**
-1. **Password Spray Detection** - 1 password, 100+ accounts
-2. **Successful Login After Brute Force** - Event 4624 after 4625 spike
-3. **Account Lockout Pattern** - Event 4740 (account locked out)
-4. **Impossible Travel** - Successful login from geographically impossible locations
-
-**Investigation Queries:**
-- Lateral movement after successful login
-- Privilege escalation attempts
-- Data exfiltration following compromise
+**Evidence Location:**
+- Azure Sentinel Incident #193653 (archived)
+- Log Analytics Workspace: LAW-Cyber-Range
+- Investigation timeframe: 10/12/2025 8:00 PM - 10:00 PM EST
 
 ---
 
-## 📚 References
+## Conclusion
 
-- **MITRE ATT&CK:** [T1110 - Brute Force](https://attack.mitre.org/techniques/T1110/)
-- **Windows Event ID:** [4625 - Failed Logon](https://docs.microsoft.com/en-us/windows/security/threat-protection/auditing/event-4625)
-- **NIST 800-53:** AC-7 (Unsuccessful Login Attempts)
-- **PCI DSS:** Requirement 8.2.5 (Account Lockout)
+**Final Assessment:**  
+Incident #193653 was a **training exercise** within the LAW-Cyber-Range environment, confirmed through five independent indicators. The detection rule performed as intended, successfully identifying PowerShell-based web download activity. This investigation demonstrated:
+
+- Effective use of PICERL incident response framework
+- Command-line forensics capability (Event 4688 analysis)
+- Systematic evidence collection and correlation
+- Context-driven decision making
+- Production-ready investigation methodology
+
+**Status:** CLOSED - No remediation required  
+**Recommendation:** Consider whitelisting EICAR downloads in training environments to reduce false positive rate
+
+**Investigator Notes:**  
+This incident provided valuable hands-on experience with HIGH severity alert investigation, reinforcing the critical importance of command-line logging and systematic investigation methodologies. The same approach would apply to production incidents, with adjusted containment urgency based on production vs training context.
 
 ---
 
-**Last Updated:** October 14, 2025  
-**Author:** Muhammad Talha Tabish  
-**Status:** Production-Tested
+**Report Prepared By:** Muhammad Talha Tabish  
+**Date:** October 14, 2025  
+**Review Status:** Self-documented for portfolio demonstration
