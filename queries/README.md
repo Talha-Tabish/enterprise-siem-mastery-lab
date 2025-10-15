@@ -1,986 +1,335 @@
-\# KQL Investigation Query Library
-
-
+# KQL Investigation Query Library
 
 Production-ready queries for incident response and threat hunting in Azure Sentinel.
 
+---
 
+## Query Index
+
+1. [Lateral Movement Detection](#1-lateral-movement-detection)
+2. [Account Creation Monitoring](#2-account-creation-monitoring)
+3. [Privilege Escalation Investigation](#3-privilege-escalation-investigation)
+4. [PowerShell Execution Analysis](#4-powershell-execution-analysis)
+5. [Failed Login Pattern Analysis](#5-failed-login-pattern-analysis)
+6. [Pass-the-Hash Attack Detection](#6-pass-the-hash-attack-detection)
+7. [Credential Dumping Detection](#7-credential-dumping-detection)
+8. [Scheduled Task Creation](#8-scheduled-task-creation)
+9. [Remote Desktop Login Monitoring](#9-remote-desktop-login-monitoring)
+10. [Impossible Travel Detection](#10-impossible-travel-detection)
 
 ---
 
+## 1. Lateral Movement Detection
 
+**Purpose:** Detect suspicious network logons indicating lateral movement across systems.
 
-\## Query Index
-
-
-
-1\. \[Lateral Movement Detection](#1-lateral-movement-detection)
-
-2\. \[Account Creation Monitoring](#2-account-creation-monitoring)
-
-3\. \[Privilege Escalation Investigation](#3-privilege-escalation-investigation)
-
-4\. \[PowerShell Execution Analysis](#4-powershell-execution-analysis)
-
-5\. \[Failed Login Pattern Analysis](#5-failed-login-pattern-analysis)
-
-6\. \[Pass-the-Hash Attack Detection](#6-pass-the-hash-attack-detection)
-
-7\. \[Credential Dumping Detection](#7-credential-dumping-detection)
-
-8\. \[Scheduled Task Creation](#8-scheduled-task-creation)
-
-9\. \[Remote Desktop Login Monitoring](#9-remote-desktop-login-monitoring)
-
-10\. \[Impossible Travel Detection](#10-impossible-travel-detection)
-
-
-
----
-
-
-
-\## 1. Lateral Movement Detection
-
-
-
-\*\*MITRE ATT\&CK:\*\* T1021 - Remote Services  
-
-\*\*Use Case:\*\* Detect user accounts authenticating to multiple systems (potential lateral movement)  
-
-\*\*Event ID:\*\* 4624 (Successful Logon), Logon Type 3 (Network)
-
-
+**MITRE ATT&CK:** T1021 - Remote Services
 
 ```kql
-
 SecurityEvent
-
 | where EventID == 4624  // Successful logon
-
-| where LogonType == 3   // Network logon (lateral movement indicator)
-
+| where LogonType == 3   // Network logon
 | where Account !endswith "$"  // Exclude machine accounts
-
-| where Account !in ("SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE")
-
+| where Account !in ("ANONYMOUS LOGON", "LOCAL SERVICE", "NETWORK SERVICE")
 | summarize 
-
-&nbsp;   DistinctComputers = dcount(Computer),
-
-&nbsp;   LoginCount = count(),
-
-&nbsp;   Computers = make\_set(Computer)
-
-&nbsp;   by bin(TimeGenerated, 1h), Account, IpAddress
-
-| where DistinctComputers >= 3  // Threshold: 3+ systems in 1 hour
-
-| order by DistinctComputers desc
-
+    LogonCount = count(),
+    DistinctComputers = dcount(Computer),
+    Computers = make_set(Computer)
+    by bin(TimeGenerated, 5m), Account, IpAddress
+| where DistinctComputers >= 3  // Logged into 3+ systems
+| order by LogonCount desc
 ```
 
+**Use Case:** Investigation after malware detection or compromised account
 
-
-\*\*When to Use:\*\* 
-
-\- Investigating suspected compromise
-
-\- Post-incident lateral movement analysis
-
-\- Hunting for advanced persistent threats (APT)
-
-
-
-\*\*Tuning Tips:\*\*
-
-\- Adjust threshold based on environment (3-5 systems typical)
-
-\- Exclude service accounts that legitimately access multiple systems
-
-\- Lower threshold for privileged accounts (Domain Admins)
-
-
+**Threshold Tuning:** Adjust DistinctComputers based on environment (3-5 typical)
 
 ---
 
+## 2. Account Creation Monitoring
 
+**Purpose:** Track new user account creation for unauthorized access detection.
 
-\## 2. Account Creation Monitoring
-
-
-
-\*\*MITRE ATT\&CK:\*\* T1136.001 - Create Account (Local Account)  
-
-\*\*Use Case:\*\* Monitor new user account creation for unauthorized access  
-
-\*\*Event ID:\*\* 4720 (User Account Created)
-
-
+**MITRE ATT&CK:** T1136.001 - Create Account: Local Account
 
 ```kql
-
 SecurityEvent
-
 | where EventID == 4720  // User account created
-
-| extend 
-
-&nbsp;   CreatedAccount = TargetAccount,
-
-&nbsp;   CreatedBy = SubjectAccount,
-
-&nbsp;   CreationTime = TimeGenerated
-
 | project 
-
-&nbsp;   CreationTime,
-
-&nbsp;   CreatedAccount,
-
-&nbsp;   CreatedBy,
-
-&nbsp;   Computer,
-
-&nbsp;   TargetDomainName
-
-| order by CreationTime desc
-
-```
-
-
-
-\*\*When to Use:\*\*
-
-\- Detecting persistence mechanisms
-
-\- Insider threat investigations
-
-\- Unauthorized admin account creation
-
-\- Compliance auditing
-
-
-
-\*\*Follow-up Investigation:\*\*
-
-\- Check Event 4728 (account added to privileged groups)
-
-\- Verify if created account has admin rights
-
-\- Correlate with Event 4624 (first login of new account)
-
-
-
----
-
-
-
-\## 3. Privilege Escalation Investigation
-
-
-
-\*\*MITRE ATT\&CK:\*\* T1078.002 - Valid Accounts (Domain Accounts)  
-
-\*\*Use Case:\*\* Detect users added to privileged security groups  
-
-\*\*Event ID:\*\* 4728 (User Added to Security-Enabled Global Group)
-
-
-
-```kql
-
-SecurityEvent
-
-| where EventID == 4728  // User added to global group
-
-| where TargetUserName in (
-
-&nbsp;   "Domain Admins",
-
-&nbsp;   "Enterprise Admins",
-
-&nbsp;   "Administrators",
-
-&nbsp;   "Schema Admins",
-
-&nbsp;   "Account Operators",
-
-&nbsp;   "Backup Operators"
-
-)
-
-| extend 
-
-&nbsp;   PrivilegedGroup = TargetUserName,
-
-&nbsp;   AddedUser = MemberName,
-
-&nbsp;   AddedBy = SubjectAccount
-
-| project 
-
-&nbsp;   TimeGenerated,
-
-&nbsp;   PrivilegedGroup,
-
-&nbsp;   AddedUser,
-
-&nbsp;   AddedBy,
-
-&nbsp;   Computer
-
+    TimeGenerated,
+    NewAccount = TargetAccount,
+    CreatedBy = SubjectAccount,
+    Computer,
+    AccountDomain = TargetDomainName
 | order by TimeGenerated desc
-
 ```
 
+**Use Case:** Persistence mechanism detection, insider threat investigation
 
-
-\*\*When to Use:\*\*
-
-\- Privilege escalation detection
-
-\- Insider threat monitoring
-
-\- Post-compromise investigation
-
-\- Compliance auditing (who has admin rights?)
-
-
-
-\*\*Alert Threshold:\*\*
-
-\- ANY addition to Domain Admins/Enterprise Admins = HIGH severity
-
-\- Additions to Administrators group = MEDIUM severity
-
-
+**Alert On:** Account creation outside business hours or by non-admin users
 
 ---
 
+## 3. Privilege Escalation Investigation
 
+**Purpose:** Monitor additions to privileged security groups.
 
-\## 4. PowerShell Execution Analysis
-
-
-
-\*\*MITRE ATT\&CK:\*\* T1059.001 - PowerShell  
-
-\*\*Use Case:\*\* Hunt for suspicious PowerShell commands and scripts  
-
-\*\*Event ID:\*\* 4688 (Process Creation)
-
-
+**MITRE ATT&CK:** T1098 - Account Manipulation
 
 ```kql
-
 SecurityEvent
-
-| where EventID == 4688
-
-| where Process has "powershell.exe"
-
-| where ProcessCommandLine has\_any (
-
-&nbsp;   "Invoke-WebRequest",
-
-&nbsp;   "Invoke-RestMethod",
-
-&nbsp;   "DownloadFile",
-
-&nbsp;   "IEX",
-
-&nbsp;   "Invoke-Expression",
-
-&nbsp;   "EncodedCommand",
-
-&nbsp;   "-enc",
-
-&nbsp;   "Net.WebClient",
-
-&nbsp;   "Start-Process",
-
-&nbsp;   "Invoke-Mimikatz",
-
-&nbsp;   "bypass"
-
-)
-
-| extend 
-
-&nbsp;   CommandLength = strlen(ProcessCommandLine),
-
-&nbsp;   HasObfuscation = iff(ProcessCommandLine has "EncodedCommand", "Yes", "No")
-
+| where EventID == 4728  // User added to security-enabled global group
+| where TargetUserName in ("Domain Admins", "Enterprise Admins", "Administrators", "Schema Admins")
 | project 
-
-&nbsp;   TimeGenerated,
-
-&nbsp;   Account,
-
-&nbsp;   Computer,
-
-&nbsp;   ProcessCommandLine,
-
-&nbsp;   CommandLength,
-
-&nbsp;   HasObfuscation,
-
-&nbsp;   ParentProcessName
-
+    TimeGenerated,
+    AddedUser = MemberName,
+    AddedBy = SubjectAccount,
+    PrivilegedGroup = TargetUserName,
+    Computer
 | order by TimeGenerated desc
-
 ```
 
+**Use Case:** Privilege escalation detection, unauthorized admin access
 
-
-\*\*When to Use:\*\*
-
-\- Malware execution investigation
-
-\- Living-off-the-land binary (LOLBin) detection
-
-\- Command-and-control (C2) activity
-
-\- Data exfiltration hunting
-
-
-
-\*\*Investigation Tips:\*\*
-
-\- Commands > 500 characters often indicate obfuscation
-
-\- EncodedCommand requires Base64 decoding
-
-\- Check ParentProcessName (explorer.exe = user-initiated, unexpected parent = suspicious)
-
-
+**Alert On:** Any addition to Domain Admins or Enterprise Admins groups
 
 ---
 
+## 4. PowerShell Execution Analysis
 
+**Purpose:** Detect suspicious PowerShell commands indicating malware or attack tools.
 
-\## 5. Failed Login Pattern Analysis
-
-
-
-\*\*MITRE ATT\&CK:\*\* T1110 - Brute Force  
-
-\*\*Use Case:\*\* Analyze failed login patterns to identify attack campaigns  
-
-\*\*Event ID:\*\* 4625 (Failed Logon)
-
-
+**MITRE ATT&CK:** T1059.001 - PowerShell
 
 ```kql
-
 SecurityEvent
+| where EventID == 4688  // Process creation
+| where Process has_any ("powershell.exe", "pwsh.exe")
+| where ProcessCommandLine has_any (
+    "Invoke-WebRequest",
+    "Invoke-RestMethod", 
+    "DownloadFile",
+    "IEX",
+    "Invoke-Expression",
+    "EncodedCommand",
+    "FromBase64String",
+    "-enc",
+    "Bypass"
+)
+| project 
+    TimeGenerated,
+    Account,
+    Computer,
+    ProcessCommandLine,
+    ParentProcessName
+| order by TimeGenerated desc
+```
 
+**Use Case:** Malware download detection, living-off-the-land attack investigation
+
+**Alert On:** Encoded commands, web download functions, execution policy bypass
+
+---
+
+## 5. Failed Login Pattern Analysis
+
+**Purpose:** Identify brute force attacks and credential stuffing attempts.
+
+**MITRE ATT&CK:** T1110 - Brute Force
+
+```kql
+SecurityEvent
 | where EventID == 4625  // Failed logon
-
 | where AccountType == "User"
-
-| extend 
-
-&nbsp;   FailureReason = case(
-
-&nbsp;       Status == "0xC000006D", "Bad Username",
-
-&nbsp;       Status == "0xC000006A", "Bad Password",
-
-&nbsp;       Status == "0xC0000234", "Account Locked",
-
-&nbsp;       Status == "0xC0000064", "Account Does Not Exist",
-
-&nbsp;       Status == "0xC000006F", "Outside Logon Hours",
-
-&nbsp;       Status == "0xC0000072", "Account Disabled",
-
-&nbsp;       "Other"
-
-&nbsp;   )
-
 | summarize 
-
-&nbsp;   FailureCount = count(),
-
-&nbsp;   UniqueAccounts = dcount(Account),
-
-&nbsp;   FailureReasons = make\_set(FailureReason),
-
-&nbsp;   Accounts = make\_set(Account)
-
-&nbsp;   by bin(TimeGenerated, 5m), IpAddress, Computer
-
-| where FailureCount >= 10  // High-volume failures
-
+    FailureCount = count(),
+    FailureReasons = make_set(SubStatus),
+    TargetComputers = make_set(Computer)
+    by bin(TimeGenerated, 5m), Account, IpAddress
+| where FailureCount >= 5
+| extend 
+    AttackType = case(
+        FailureCount >= 20, "Aggressive Brute Force",
+        FailureCount >= 10, "Moderate Brute Force",
+        "Potential Brute Force"
+    )
 | order by FailureCount desc
-
 ```
 
+**Use Case:** Brute force attack detection, account lockout investigation
 
-
-\*\*When to Use:\*\*
-
-\- Distinguishing brute force vs password spray attacks
-
-\- Identifying attacker infrastructure (source IPs)
-
-\- Understanding attack methodology
-
-
-
-\*\*Pattern Recognition:\*\*
-
-\- Many failures, one account = Brute force
-
-\- Few failures per account, many accounts = Password spray
-
-\- "Account Does Not Exist" = Username enumeration
-
-
+**Threshold:** 5+ failures in 5 minutes (adjust based on baseline)
 
 ---
 
+## 6. Pass-the-Hash Attack Detection
 
+**Purpose:** Detect NTLM authentication anomalies indicating pass-the-hash attacks.
 
-\## 6. Pass-the-Hash Attack Detection
-
-
-
-\*\*MITRE ATT\&CK:\*\* T1550.002 - Pass the Hash  
-
-\*\*Use Case:\*\* Detect NTLM authentication without prior Kerberos ticket  
-
-\*\*Event IDs:\*\* 4768 (Kerberos TGT Request), 4769 (Kerberos Service Ticket)
-
-
+**MITRE ATT&CK:** T1550.002 - Use Alternate Authentication Material: Pass the Hash
 
 ```kql
-
 SecurityEvent
-
-| where EventID in (4768, 4769)  // Kerberos authentication
-
-| where Status == "0x0"  // Successful
-
-| where TicketEncryptionType == "0x17"  // RC4 encryption (Pass-the-Hash indicator)
-
-| extend 
-
-&nbsp;   AuthType = case(
-
-&nbsp;       EventID == 4768, "TGT Request",
-
-&nbsp;       EventID == 4769, "Service Ticket",
-
-&nbsp;       "Unknown"
-
-&nbsp;   )
-
-| summarize 
-
-&nbsp;   AuthCount = count(),
-
-&nbsp;   Computers = make\_set(Computer)
-
-&nbsp;   by bin(TimeGenerated, 5m), Account, IpAddress, TicketEncryptionType
-
-| where AuthCount >= 5  // Multiple authentications with RC4
-
-| order by TimeGenerated desc
-
-```
-
-
-
-\*\*When to Use:\*\*
-
-\- Post-compromise lateral movement investigation
-
-\- Advanced persistent threat (APT) hunting
-
-\- Credential theft detection
-
-
-
-\*\*Detection Logic:\*\*
-
-\- RC4 encryption (0x17) = Legacy/weak, often indicates Pass-the-Hash
-
-\- Modern systems use AES256 (0x12)
-
-\- Multiple rapid RC4 auths = suspicious
-
-
-
----
-
-
-
-\## 7. Credential Dumping Detection
-
-
-
-\*\*MITRE ATT\&CK:\*\* T1003 - OS Credential Dumping  
-
-\*\*Use Case:\*\* Detect tools accessing LSASS memory (Mimikatz, ProcDump)  
-
-\*\*Event ID:\*\* 4688 (Process Creation), 4656 (Handle to Object Requested)
-
-
-
-```kql
-
-SecurityEvent
-
-| where EventID == 4688
-
-| where ProcessCommandLine has\_any (
-
-&nbsp;   "lsass",
-
-&nbsp;   "lsass.exe",
-
-&nbsp;   "lsass.dmp",
-
-&nbsp;   "mimikatz",
-
-&nbsp;   "procdump",
-
-&nbsp;   "sekurlsa",
-
-&nbsp;   "gsecdump",
-
-&nbsp;   "wce.exe",
-
-&nbsp;   "pwdump"
-
-)
-
-| extend 
-
-&nbsp;   CredentialDumpingTool = case(
-
-&nbsp;       ProcessCommandLine has "mimikatz", "Mimikatz",
-
-&nbsp;       ProcessCommandLine has "procdump", "ProcDump",
-
-&nbsp;       ProcessCommandLine has "lsass.dmp", "LSASS Memory Dump",
-
-&nbsp;       "Suspicious Process"
-
-&nbsp;   )
-
-| project 
-
-&nbsp;   TimeGenerated,
-
-&nbsp;   Account,
-
-&nbsp;   Computer,
-
-&nbsp;   ProcessCommandLine,
-
-&nbsp;   CredentialDumpingTool,
-
-&nbsp;   ParentProcessName
-
-| order by TimeGenerated desc
-
-```
-
-
-
-\*\*When to Use:\*\*
-
-\- HIGH severity alerts (credential theft = critical)
-
-\- Post-breach investigation
-
-\- Hunting for credential harvesting
-
-
-
-\*\*Immediate Response:\*\*
-
-\- Isolate endpoint immediately
-
-\- Force password resets for all accounts on affected system
-
-\- Check for lateral movement from compromised credentials
-
-
-
----
-
-
-
-\## 8. Scheduled Task Creation
-
-
-
-\*\*MITRE ATT\&CK:\*\* T1053.005 - Scheduled Task  
-
-\*\*Use Case:\*\* Detect persistence via scheduled tasks  
-
-\*\*Event ID:\*\* 4698 (Scheduled Task Created)
-
-
-
-```kql
-
-SecurityEvent
-
-| where EventID == 4698  // Scheduled task created
-
-| extend 
-
-&nbsp;   TaskName = extract("Task Name:\\\\s+(.+)", 1, tostring(EventData)),
-
-&nbsp;   TaskContent = tostring(EventData)
-
-| where TaskContent has\_any (
-
-&nbsp;   "powershell",
-
-&nbsp;   "cmd.exe",
-
-&nbsp;   "wscript",
-
-&nbsp;   "cscript",
-
-&nbsp;   "regsvr32",
-
-&nbsp;   "rundll32",
-
-&nbsp;   "mshta"
-
-)
-
-| project 
-
-&nbsp;   TimeGenerated,
-
-&nbsp;   Account,
-
-&nbsp;   Computer,
-
-&nbsp;   TaskName,
-
-&nbsp;   TaskContent
-
-| order by TimeGenerated desc
-
-```
-
-
-
-\*\*When to Use:\*\*
-
-\- Persistence mechanism detection
-
-\- Post-compromise hunting
-
-\- Insider threat monitoring
-
-
-
-\*\*Suspicious Indicators:\*\*
-
-\- Tasks running PowerShell/scripts
-
-\- Tasks executing from temp directories
-
-\- Tasks created by non-admin accounts
-
-\- Tasks with names mimicking system tasks
-
-
-
----
-
-
-
-\## 9. Remote Desktop Login Monitoring
-
-
-
-\*\*MITRE ATT\&CK:\*\* T1021.001 - Remote Desktop Protocol  
-
-\*\*Use Case:\*\* Monitor RDP access to critical systems  
-
-\*\*Event ID:\*\* 4624 (Successful Logon), Logon Type 10 (RDP)
-
-
-
-```kql
-
-SecurityEvent
-
 | where EventID == 4624  // Successful logon
-
-| where LogonType == 10  // RDP logon
-
-| extend 
-
-&nbsp;   SourceIP = IpAddress,
-
-&nbsp;   TargetSystem = Computer,
-
-&nbsp;   RDPUser = Account
-
-| summarize 
-
-&nbsp;   LoginCount = count(),
-
-&nbsp;   FirstLogin = min(TimeGenerated),
-
-&nbsp;   LastLogin = max(TimeGenerated),
-
-&nbsp;   TargetSystems = make\_set(Computer)
-
-&nbsp;   by RDPUser, SourceIP
-
-| order by LoginCount desc
-
-```
-
-
-
-\*\*When to Use:\*\*
-
-\- Monitoring privileged access
-
-\- Detecting unauthorized RDP sessions
-
-\- Investigating lateral movement via RDP
-
-\- Compliance auditing
-
-
-
-\*\*Alert Criteria:\*\*
-
-\- RDP from external IPs = HIGH severity
-
-\- RDP to Domain Controllers = CRITICAL
-
-\- RDP outside business hours = MEDIUM severity
-
-
-
----
-
-
-
-\## 10. Impossible Travel Detection
-
-
-
-\*\*MITRE ATT\&CK:\*\* T1078 - Valid Accounts  
-
-\*\*Use Case:\*\* Detect logins from geographically impossible locations  
-
-\*\*Data Source:\*\* Azure AD SigninLogs
-
-
-
-```kql
-
-SigninLogs
-
-| where ResultType == 0  // Successful sign-in
-
-| extend 
-
-&nbsp;   Location1 = tostring(LocationDetails.city),
-
-&nbsp;   Country1 = tostring(LocationDetails.countryOrRegion),
-
-&nbsp;   Latitude = toreal(LocationDetails.geoCoordinates.latitude),
-
-&nbsp;   Longitude = toreal(LocationDetails.geoCoordinates.longitude)
-
-| order by UserPrincipalName, TimeGenerated asc
-
-| serialize
-
-| extend 
-
-&nbsp;   PrevLocation = prev(Location1),
-
-&nbsp;   PrevTime = prev(TimeGenerated),
-
-&nbsp;   TimeDiff = datetime\_diff('minute', TimeGenerated, PrevTime)
-
-| where UserPrincipalName == prev(UserPrincipalName)
-
-| where Location1 != PrevLocation
-
-| where TimeDiff < 60  // Less than 1 hour between logins
-
-| where Location1 != "" and PrevLocation != ""
-
-| project 
-
-&nbsp;   TimeGenerated,
-
-&nbsp;   UserPrincipalName,
-
-&nbsp;   PrevLocation,
-
-&nbsp;   Location1,
-
-&nbsp;   TimeDiff,
-
-&nbsp;   IPAddress
-
-| order by TimeDiff asc
-
-```
-
-
-
-\*\*When to Use:\*\*
-
-\- Compromised credential detection
-
-\- Account takeover investigation
-
-\- Insider threat with VPN abuse
-
-
-
-\*\*Legitimate Scenarios (Whitelist):\*\*
-
-\- VPN exit points in different countries
-
-\- Users traveling internationally
-
-\- Shared accounts (discouraged but common)
-
-
-
----
-
-
-
-\## Query Usage Tips
-
-
-
-\### Investigation Workflow
-
-
-
-1\. \*\*Start Broad:\*\* Use time-based queries to identify suspicious timeframes
-
-2\. \*\*Narrow Down:\*\* Add account/computer filters based on initial findings
-
-3\. \*\*Pivot:\*\* Use related Event IDs to build full attack timeline
-
-4\. \*\*Correlate:\*\* Combine multiple queries to validate findings
-
-
-
-\### Performance Optimization
-
-
-
-\- Always include time filters: `| where TimeGenerated > ago(24h)`
-
-\- Use `summarize` instead of raw event dumps
-
-\- Test queries on small time windows first
-
-\- Add `| take 100` during development
-
-
-
-\### Saving Custom Queries
-
-
-
-In Azure Sentinel:
-
-1\. Log Analytics → Queries
-
-2\. Save Query → Name + Category
-
-3\. Pin frequently used queries to dashboard
-
-
-
----
-
-
-
-\## Integration with Detection Rules
-
-
-
-These queries can be converted to scheduled analytics rules:
-
-
-
-\*\*Example: Convert Query #1 to Alert Rule\*\*
-
-
-
-```kql
-
-// Lateral Movement Alert Rule
-
-SecurityEvent
-
-| where EventID == 4624
-
-| where LogonType == 3
-
+| where LogonType == 3  // Network logon
+| where AuthenticationPackageName == "NTLM"
 | where Account !endswith "$"
-
-| summarize DistinctComputers = dcount(Computer) by bin(TimeGenerated, 1h), Account
-
-| where DistinctComputers >= 3
-
-// Rule Configuration:
-
-// Frequency: Every 1 hour
-
-// Lookback: 1 hour
-
-// Severity: HIGH
-
-// Tactics: Lateral Movement
-
+| summarize 
+    LogonCount = count(),
+    UniqueWorkstations = dcount(WorkstationName),
+    Workstations = make_set(WorkstationName)
+    by bin(TimeGenerated, 1h), Account, IpAddress
+| where UniqueWorkstations >= 5  // Same account, multiple sources
+| order by LogonCount desc
 ```
 
+**Use Case:** Credential theft detection, advanced persistent threat (APT) investigation
 
-
----
-
-
-
-\## References
-
-
-
-\- \[MITRE ATT\&CK Framework](https://attack.mitre.org/)
-
-\- \[Windows Security Event IDs](https://docs.microsoft.com/en-us/windows/security/threat-protection/auditing/security-auditing-overview)
-
-\- \[Azure Sentinel KQL Documentation](https://docs.microsoft.com/en-us/azure/sentinel/kusto-overview)
-
-
+**Alert On:** High-value accounts with unusual NTLM authentication patterns
 
 ---
 
+## 7. Credential Dumping Detection
 
+**Purpose:** Detect tools attempting to extract credentials from memory.
 
-Last Updated: October 15, 2025  
+**MITRE ATT&CK:** T1003 - OS Credential Dumping
 
-Author: Muhammad Talha Tabish  
+```kql
+SecurityEvent
+| where EventID == 4688  // Process creation
+| where ProcessCommandLine has_any (
+    "mimikatz",
+    "procdump",
+    "lsass",
+    "sekurlsa",
+    "pwdump",
+    "gsecdump"
+)
+or Process has_any (
+    "mimikatz.exe",
+    "procdump.exe",
+    "procdump64.exe"
+)
+| project 
+    TimeGenerated,
+    Account,
+    Computer,
+    Process,
+    ProcessCommandLine,
+    ParentProcessName
+| order by TimeGenerated desc
+```
 
-Status: Production-Tested
+**Use Case:** Post-exploitation activity detection, credential theft investigation
 
+**Alert On:** Any execution of credential dumping tools
+
+---
+
+## 8. Scheduled Task Creation
+
+**Purpose:** Monitor scheduled task creation for persistence mechanisms.
+
+**MITRE ATT&CK:** T1053.005 - Scheduled Task/Job: Scheduled Task
+
+```kql
+SecurityEvent
+| where EventID == 4698  // Scheduled task created
+| project 
+    TimeGenerated,
+    TaskName,
+    CreatedBy = SubjectAccount,
+    Computer,
+    TaskContent
+| order by TimeGenerated desc
+```
+
+**Use Case:** Persistence mechanism detection, malware investigation
+
+**Alert On:** Tasks created by non-admin users or unusual task names
+
+---
+
+## 9. Remote Desktop Login Monitoring
+
+**Purpose:** Track RDP connections for unauthorized remote access.
+
+**MITRE ATT&CK:** T1021.001 - Remote Services: Remote Desktop Protocol
+
+```kql
+SecurityEvent
+| where EventID == 4624  // Successful logon
+| where LogonType == 10  // RemoteInteractive (RDP)
+| where Account !endswith "$"
+| project 
+    TimeGenerated,
+    Account,
+    SourceIP = IpAddress,
+    TargetComputer = Computer,
+    LogonType
+| order by TimeGenerated desc
+```
+
+**Use Case:** Remote access monitoring, insider threat detection
+
+**Alert On:** RDP from external IPs, non-business hours access
+
+---
+
+## 10. Impossible Travel Detection
+
+**Purpose:** Identify logons from geographically impossible locations.
+
+**MITRE ATT&CK:** T1078 - Valid Accounts
+
+```kql
+SigninLogs
+| where ResultType == 0  // Successful sign-in
+| where Location != ""
+| extend 
+    PreviousLocation = prev(Location, 1),
+    PreviousTime = prev(TimeGenerated, 1)
+| where PreviousLocation != Location
+| extend TimeDiff = datetime_diff('minute', TimeGenerated, PreviousTime)
+| where TimeDiff <= 60  // Less than 1 hour between logins
+| project 
+    TimeGenerated,
+    UserPrincipalName,
+    CurrentLocation = Location,
+    PreviousLocation,
+    TimeDiffMinutes = TimeDiff,
+    IPAddress,
+    AppDisplayName
+| order by TimeGenerated desc
+```
+
+**Use Case:** Compromised credential detection, account takeover investigation
+
+**Alert On:** Multiple geographic locations within physically impossible timeframes
+
+---
+
+## Query Usage Guidelines
+
+**Investigation Workflow:**
+1. Start with broad queries (Failed Logins, Account Creation)
+2. Narrow based on findings (Lateral Movement, Privilege Escalation)
+3. Correlate across multiple queries for timeline reconstruction
+4. Export results for documentation and reporting
+
+**Performance Optimization:**
+- Use time filters to limit query scope: `| where TimeGenerated > ago(24h)`
+- Add Computer filters for targeted investigations: `| where Computer == "TARGET-PC"`
+- Use summarize for aggregation instead of multiple where clauses
+
+**False Positive Reduction:**
+- Establish baselines for each query in your environment
+- Whitelist known service accounts and automated processes
+- Adjust thresholds based on organizational behavior patterns
+
+---
+
+**Last Updated:** October 15, 2025  
+**Author:** Muhammad Talha Tabish  
+**Status:** Production-Ready
